@@ -24,17 +24,14 @@ jobs:
       - name: Check Chocolatey installation
         run: choco --version
       
-      - name: Install Visual Studio 2022 dependencies
+      # windows-latest already ships VS2022 with the C++ desktop/native workloads
+      # preinstalled (https://github.com/actions/runner-images) - the
+      # visualstudio2022-workload-* choco packages were trying to re-detect/modify that
+      # existing install and failing ("Unable to detect any supported Visual Studio
+      # product"), not actually missing anything this build needs. Only the WDK is
+      # genuinely absent from the runner image.
+      - name: Install WDK
         run: |
-          choco install visualstudio2022-workload-manageddesktop -y
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
-          choco install visualstudio2022-workload-nativedesktop -y
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
-          choco install visualstudio2022-workload-vctools -y
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
           choco install windowsdriverkit11 -y
           if ($LASTEXITCODE -ne 0) { exit 1 }
       

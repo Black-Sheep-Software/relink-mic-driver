@@ -22,17 +22,10 @@ jobs:
       - name: Check Chocolatey installation
         run: choco --version
       
-      - name: Install Visual Studio 2022 dependencies
+      # See VAD-compile.yml's own comment: windows-latest already ships VS2022's C++
+      # workloads, so only the WDK needs installing here.
+      - name: Install WDK
         run: |
-          choco install visualstudio2022-workload-manageddesktop -y
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
-          choco install visualstudio2022-workload-nativedesktop -y
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
-          choco install visualstudio2022-workload-vctools -y
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          
           choco install windowsdriverkit11 -y
           if ($LASTEXITCODE -ne 0) { exit 1 }
       
