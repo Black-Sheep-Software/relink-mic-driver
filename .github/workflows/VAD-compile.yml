@@ -13,7 +13,7 @@ jobs:
     strategy:
       matrix:
         configuration: [Debug, Release]
-        platform: [x64, ARM64]
+        platform: [x64]  # ARM64 dropped for now - ReLink itself only targets x64 (docs/windows.md); revisit if that changes
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
