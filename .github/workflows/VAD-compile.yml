@@ -41,7 +41,7 @@ jobs:
       # package version in packages.config.
       - name: Add WDK build tools to PATH
         run: |
-          $tool = Get-ChildItem -Path ".\packages" -Recurse -Filter "stampinf.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $tool = Get-ChildItem -Path ".\packages" -Recurse -Filter "stampinf.exe" -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match "\\x64\\" } | Select-Object -First 1
           if (-not $tool) { Write-Error "stampinf.exe not found anywhere under .\packages"; exit 1 }
           Write-Host "Found stampinf.exe at $($tool.FullName)"
           echo "$($tool.DirectoryName)" >> $env:GITHUB_PATH

@@ -4,10 +4,11 @@
        packages.config into .\packages\, not a system WDK install - no choco package or
        registry-based $(WindowsDriverKitDir) is needed for this to work. MSBuild imports
        Directory.Build.props from the project tree root automatically; nothing has to
-       reference this file directly. -->
+       reference this file directly. x64 only - ReLink itself only targets x64
+       (docs/windows.md), so ARM64 packages are not restored at all here, to avoid the
+       wrong-architecture stampinf.exe getting picked up by Get-ChildItem's own search in
+       the CI workflow. -->
   <Import Project="packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.x64.props" Condition="Exists('packages\Microsoft.Windows.WDK.x64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.x64.props') and '$(Platform)' == 'x64'"/>
-  <Import Project="packages\Microsoft.Windows.WDK.arm64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.arm64.props" Condition="Exists('packages\Microsoft.Windows.WDK.arm64.10.0.28000.2526\build\native\Microsoft.Windows.WDK.arm64.props') and '$(Platform)' == 'ARM64'"/>
   <Import Project="packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.x64.props" Condition="Exists('packages\Microsoft.Windows.SDK.CPP.x64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.x64.props') and '$(Platform)' == 'x64'"/>
-  <Import Project="packages\Microsoft.Windows.SDK.CPP.arm64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.arm64.props" Condition="Exists('packages\Microsoft.Windows.SDK.CPP.arm64.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.arm64.props') and '$(Platform)' == 'ARM64'"/>
   <Import Project="packages\Microsoft.Windows.SDK.CPP.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.props" Condition="Exists('packages\Microsoft.Windows.SDK.CPP.10.0.28000.2526\build\native\Microsoft.Windows.SDK.cpp.props')"/>
 </Project>
