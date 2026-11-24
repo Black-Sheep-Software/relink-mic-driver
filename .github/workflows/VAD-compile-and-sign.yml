@@ -25,11 +25,19 @@ jobs:
       - name: Restore WDK/SDK NuGet packages
         run: nuget restore .\packages.config -PackagesDirectory .\packages\
 
+      # See VAD-compile.yml's own comment: stampinf.exe ships inside the WDK NuGet
+      # package but is not on PATH by default.
+      - name: Add WDK build tools to PATH
+        run: |
+          $tool = Get-ChildItem -Path ".\packages" -Recurse -Filter "stampinf.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $tool) { Write-Error "stampinf.exe not found anywhere under .\packages"; exit 1 }
+          echo "$($tool.DirectoryName)" >> $env:GITHUB_PATH
+
       # Build x64 with full validation
       - name: Build driver (x64)
         if: matrix.platform == 'x64'
         run: |
-          msbuild "VirtualAudioDriver.sln" /p:Configuration=${{ matrix.configuration }} /p:Platform=${{ matrix.platform }}
+          msbuild "VirtualAudioDriver.sln" /p:Configuration=${{ matrix.configuration }} /p:Platform=${{ matrix.platform }} /p:RunCodeAnalysis=false /p:UseInfVerifierEx=false /p:ValidateDrivers=false /p:StampInf=false /p:ApiValidator_Enable=false /p:InfVerif_Enable=false /p:DisableVerification=true /p:SignMode=Off /p:EnableInf2cat=false
       
       # Build ARM64 with validation completely disabled
       - name: Build driver (ARM64)

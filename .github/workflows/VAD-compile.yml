@@ -33,6 +33,19 @@ jobs:
       - name: Restore WDK/SDK NuGet packages
         run: nuget restore .\packages.config -PackagesDirectory .\packages\
 
+      # The WDK NuGet package ships stampinf.exe (and inf2cat.exe/infverif.exe) under its
+      # own bin\<version>\<arch>\ - it is not on PATH by default, which is the real cause
+      # of "TRK0005: Failed to locate: stampinf.exe". Found and matches a real report of
+      # this exact error (see commit message); searching rather than hardcoding the path
+      # since the WDK's own internal version folder does not always match the NuGet
+      # package version in packages.config.
+      - name: Add WDK build tools to PATH
+        run: |
+          $tool = Get-ChildItem -Path ".\packages" -Recurse -Filter "stampinf.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $tool) { Write-Error "stampinf.exe not found anywhere under .\packages"; exit 1 }
+          Write-Host "Found stampinf.exe at $($tool.FullName)"
+          echo "$($tool.DirectoryName)" >> $env:GITHUB_PATH
+
       # Build x64 with full validation
       # stampinf.exe (INF version-stamping) is a WDK *build tool*, not a header/lib -
       # the NuGet-restored WDK package does not include it (that normally comes from a
