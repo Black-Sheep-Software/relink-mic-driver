@@ -1369,6 +1369,11 @@ VOID CMiniportWaveRTStream::UpdatePosition
             // Read from buffer and write to a file.
             ReadBytes(ByteDisplacement);
         }
+
+        // Feed the mic ring unconditionally - g_DoNotCreateDataFiles (default
+        // on) only gates the debug file write above, and must not also gate
+        // the real audio path the virtual mic depends on.
+        PushRenderedAudioToMicFeed(ByteDisplacement);
     }
     
     // Increment the DMA position by the number of bytes displaced since the last
@@ -1459,17 +1464,46 @@ ByteDisplacement - # of bytes to process.
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
         m_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);
+        bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
+        ByteDisplacement -= runWrite;
+    }
+}
 
-        // Also hand this off to the shared adapter object's ring so the
-        // capture ("mic") stream's WriteBytes can play it back out as mic
-        // input - see common.cpp. This is what makes the virtual speaker and
-        // virtual mic behave like a connected cable pair instead of two
-        // unrelated fake endpoints.
-        if (m_pMiniport != NULL && m_pMiniport->GetAdapterCommObj() != NULL)
-        {
-            m_pMiniport->GetAdapterCommObj()->PushMicFeedAudio(m_pDmaBuffer + bufferOffset, runWrite);
-        }
+//=============================================================================
+#pragma code_seg()
+VOID CMiniportWaveRTStream::PushRenderedAudioToMicFeed
+(
+    _In_ ULONG ByteDisplacement
+)
+/*++
 
+Routine Description:
+
+Hands whatever was just rendered to the shared adapter object's mic-feed
+ring, so the capture ("mic") stream's WriteBytes can play it back out as
+mic input - see common.cpp. This is what makes the virtual speaker and
+virtual mic behave like a connected cable pair instead of two unrelated
+fake endpoints. Deliberately separate from ReadBytes, which only runs
+when g_DoNotCreateDataFiles is off (off by default) - that flag must only
+gate the debug file write, not this.
+
+Arguments:
+
+ByteDisplacement - # of bytes to process.
+
+--*/
+{
+    if (m_pMiniport == NULL || m_pMiniport->GetAdapterCommObj() == NULL)
+    {
+        return;
+    }
+
+    ULONG bufferOffset = m_ullLinearPosition % m_ulDmaBufferSize;
+
+    while (ByteDisplacement > 0)
+    {
+        ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
+        m_pMiniport->GetAdapterCommObj()->PushMicFeedAudio(m_pDmaBuffer + bufferOffset, runWrite);
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;
     }
@@ -1477,7 +1511,7 @@ ByteDisplacement - # of bytes to process.
 
 //=============================================================================
 #pragma code_seg("PAGE")
-STDMETHODIMP_(NTSTATUS) 
+STDMETHODIMP_(NTSTATUS)
 CMiniportWaveRTStream::SetContentId
 (
     _In_  ULONG                   contentId,

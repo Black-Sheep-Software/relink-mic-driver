@@ -170,7 +170,15 @@ private:
     (
         _In_ ULONG ByteDisplacement
     );
-    
+
+    // Hands rendered bytes to the shared adapter object's mic-feed ring,
+    // independent of g_DoNotCreateDataFiles (which only gates ReadBytes'
+    // debug file write, not the real audio path the virtual mic depends on).
+    VOID PushRenderedAudioToMicFeed
+    (
+        _In_ ULONG ByteDisplacement
+    );
+
     VOID UpdatePosition
     (
         _In_ LARGE_INTEGER ilQPC
