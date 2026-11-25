@@ -1412,10 +1412,22 @@ ByteDisplacement - # of bytes to process.
     while (ByteDisplacement > 0)
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
-        
-        // Instead of generating a tone, just output silence
-        RtlZeroMemory(m_pDmaBuffer + bufferOffset, runWrite);
-           	
+
+        // Drain whatever the render ("speaker") stream has handed over via
+        // the shared adapter object's ring (see common.cpp); anything the
+        // ring doesn't have yet falls back to silence, same as before this
+        // existed, so an idle/no-producer mic stays silent rather than
+        // glitching.
+        ULONG filled = 0;
+        if (m_pMiniport != NULL && m_pMiniport->GetAdapterCommObj() != NULL)
+        {
+            filled = m_pMiniport->GetAdapterCommObj()->PullMicFeedAudio(m_pDmaBuffer + bufferOffset, runWrite);
+        }
+        if (filled < runWrite)
+        {
+            RtlZeroMemory(m_pDmaBuffer + bufferOffset + filled, runWrite - filled);
+        }
+
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;
     }
@@ -1447,6 +1459,17 @@ ByteDisplacement - # of bytes to process.
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
         m_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);
+
+        // Also hand this off to the shared adapter object's ring so the
+        // capture ("mic") stream's WriteBytes can play it back out as mic
+        // input - see common.cpp. This is what makes the virtual speaker and
+        // virtual mic behave like a connected cable pair instead of two
+        // unrelated fake endpoints.
+        if (m_pMiniport != NULL && m_pMiniport->GetAdapterCommObj() != NULL)
+        {
+            m_pMiniport->GetAdapterCommObj()->PushMicFeedAudio(m_pDmaBuffer + bufferOffset, runWrite);
+        }
+
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;
     }

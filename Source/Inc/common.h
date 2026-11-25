@@ -458,6 +458,27 @@ DECLARE_INTERFACE_(IAdapterCommon, IUnknown)
 
     STDMETHOD_(VOID, Cleanup)();
 
+    // Feeds bytes rendered to the virtual speaker into the virtual mic's
+    // capture ring, so the two independent Sysvad-derived endpoints behave
+    // like a connected cable pair instead of two unrelated fake devices.
+    STDMETHOD_(VOID,            PushMicFeedAudio)
+    (
+        THIS_
+        _In_reads_bytes_(Bytes) BYTE*  Data,
+        _In_                    ULONG  Bytes
+    ) PURE;
+
+    // Drains up to Bytes from that same ring into Data. Returns the number
+    // of bytes actually supplied; the caller is responsible for zero-filling
+    // the remainder (same silence-on-underrun behavior as before this ring
+    // existed, for whenever nothing is currently rendering).
+    STDMETHOD_(ULONG,           PullMicFeedAudio)
+    (
+        THIS_
+        _Out_writes_bytes_(Bytes) BYTE* Data,
+        _In_                      ULONG Bytes
+    ) PURE;
+
 };
 
 typedef IAdapterCommon *PADAPTERCOMMON;

@@ -51,6 +51,20 @@ class CAdapterCommon :
 
         DWORD                   m_dwIdleRequests;
 
+        // Mic-feed ring: carries bytes from the render ("speaker") stream's
+        // ReadBytes to the capture ("mic") stream's WriteBytes, since the two
+        // are otherwise two unrelated fake endpoints with nothing wiring them
+        // together. One spinlock guards both cursors - ReadBytes/WriteBytes
+        // are each already serialized per-stream at PASSIVE_LEVEL by PortCls's
+        // own timer mechanism, so this only needs to protect the handoff
+        // between those two independent call sites, not reentrancy within
+        // either one.
+        BYTE*                   m_pMicFeedRing;
+        ULONG                   m_ulMicFeedRingSize;
+        ULONG                   m_ulMicFeedReadCursor;
+        ULONG                   m_ulMicFeedWriteCursor;
+        KSPIN_LOCK              m_MicFeedRingLock;
+
     public:
         //=====================================================================
         // Default CUnknown
@@ -229,6 +243,18 @@ class CAdapterCommon :
         );
 
         STDMETHODIMP_(VOID) Cleanup();
+
+        STDMETHODIMP_(VOID) PushMicFeedAudio
+        (
+            _In_reads_bytes_(Bytes) BYTE*  Data,
+            _In_                    ULONG  Bytes
+        );
+
+        STDMETHODIMP_(ULONG) PullMicFeedAudio
+        (
+            _Out_writes_bytes_(Bytes) BYTE* Data,
+            _In_                      ULONG Bytes
+        );
 
         //=====================================================================
         // friends
@@ -436,7 +462,19 @@ Return Value:
         delete m_pHW;
         m_pHW = NULL;
     }
-    
+
+    // This object's one strong reference lives in the FDO's device extension
+    // (set once in StartDevice, adapter.cpp) and is only released on device
+    // stop/removal, which PortCls sequences after the render/capture filters
+    // and their streams are already torn down - so by the time this runs,
+    // no ReadBytes/WriteBytes call can still be touching the ring.
+    if (m_pMicFeedRing)
+    {
+        ExFreePoolWithTag(m_pMicFeedRing, MINADAPTER_POOLTAG);
+        m_pMicFeedRing = NULL;
+        m_ulMicFeedRingSize = 0;
+    }
+
     CSaveData::DestroyWorkItems();
     SAFE_RELEASE(m_pPortClsEtwHelper);
     SAFE_RELEASE(m_pServiceGroupWave);
@@ -568,6 +606,23 @@ Return Value:
     m_PowerState            = PowerDeviceD0;
     m_pHW                   = NULL;
     m_pPortClsEtwHelper     = NULL;
+
+    m_pMicFeedRing          = NULL;
+    m_ulMicFeedRingSize     = 64 * 1024; // ~a few hundred ms at typical rates; revisit once a real format mismatch is observed
+    m_ulMicFeedReadCursor   = 0;
+    m_ulMicFeedWriteCursor  = 0;
+    KeInitializeSpinLock(&m_MicFeedRingLock);
+
+    m_pMicFeedRing = (BYTE*)ExAllocatePool2(POOL_FLAG_NON_PAGED, m_ulMicFeedRingSize, MINADAPTER_POOLTAG);
+    if (m_pMicFeedRing == NULL)
+    {
+        DPF(D_ERROR, ("Failed to allocate mic-feed ring - mic will remain silent"));
+        m_ulMicFeedRingSize = 0;
+    }
+    else
+    {
+        RtlZeroMemory(m_pMicFeedRing, m_ulMicFeedRingSize);
+    }
 
     InitializeListHead(&m_SubdeviceCache);
 
@@ -2103,6 +2158,102 @@ CAdapterCommon::Cleanup()
     PAGED_CODE();
     DPF_ENTER(("[CAdapterCommon::Cleanup]"));
     EmptySubdeviceCache();
+}
+
+//=============================================================================
+// Mic-feed ring: see the member declarations above for the lifetime/locking
+// rationale. Both methods run at PASSIVE_LEVEL (called from ReadBytes/
+// WriteBytes, themselves called from UpdatePosition - see minwavertstream.cpp)
+// so a simple KSPIN_LOCK is enough; neither method is ever called at
+// DISPATCH_LEVEL or higher.
+#pragma code_seg()
+VOID
+CAdapterCommon::PushMicFeedAudio
+(
+    _In_reads_bytes_(Bytes) BYTE*  Data,
+    _In_                    ULONG  Bytes
+)
+{
+    if (m_pMicFeedRing == NULL || m_ulMicFeedRingSize == 0 || Bytes == 0)
+    {
+        return;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_MicFeedRingLock, &oldIrql);
+
+    // If the producer is pushing faster than the consumer drains (or nothing
+    // is draining at all), drop the oldest bytes rather than growing without
+    // bound or overflowing the ring's own bookkeeping - advance the read
+    // cursor to make room, same as any bounded SPSC ring under overrun.
+    ULONG used = m_ulMicFeedWriteCursor - m_ulMicFeedReadCursor; // unsigned wraparound-safe
+    if (Bytes > m_ulMicFeedRingSize)
+    {
+        // A single push bigger than the whole ring: nothing previously
+        // buffered survives regardless, and the whole ring will be
+        // overwritten by the tail of this push - just catch the read
+        // cursor up to the write cursor as it stands right now, before
+        // either is advanced below.
+        Data += (Bytes - m_ulMicFeedRingSize);
+        Bytes = m_ulMicFeedRingSize;
+        m_ulMicFeedReadCursor = m_ulMicFeedWriteCursor;
+    }
+    else if (used + Bytes > m_ulMicFeedRingSize)
+    {
+        m_ulMicFeedReadCursor = m_ulMicFeedWriteCursor + Bytes - m_ulMicFeedRingSize;
+    }
+
+    ULONG writeOffset = m_ulMicFeedWriteCursor % m_ulMicFeedRingSize;
+    ULONG remaining = Bytes;
+    BYTE* src = Data;
+    while (remaining > 0)
+    {
+        ULONG run = min(remaining, m_ulMicFeedRingSize - writeOffset);
+        RtlCopyMemory(m_pMicFeedRing + writeOffset, src, run);
+        writeOffset = (writeOffset + run) % m_ulMicFeedRingSize;
+        src += run;
+        remaining -= run;
+    }
+    m_ulMicFeedWriteCursor += Bytes;
+
+    KeReleaseSpinLock(&m_MicFeedRingLock, oldIrql);
+}
+
+#pragma code_seg()
+ULONG
+CAdapterCommon::PullMicFeedAudio
+(
+    _Out_writes_bytes_(Bytes) BYTE* Data,
+    _In_                      ULONG Bytes
+)
+{
+    if (m_pMicFeedRing == NULL || m_ulMicFeedRingSize == 0 || Bytes == 0)
+    {
+        return 0;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_MicFeedRingLock, &oldIrql);
+
+    ULONG available = m_ulMicFeedWriteCursor - m_ulMicFeedReadCursor; // unsigned wraparound-safe
+    ULONG toCopy = min(available, Bytes);
+
+    ULONG readOffset = m_ulMicFeedReadCursor % m_ulMicFeedRingSize;
+    ULONG remaining = toCopy;
+    BYTE* dst = Data;
+    while (remaining > 0)
+    {
+        ULONG run = min(remaining, m_ulMicFeedRingSize - readOffset);
+        RtlCopyMemory(dst, m_pMicFeedRing + readOffset, run);
+        readOffset = (readOffset + run) % m_ulMicFeedRingSize;
+        dst += run;
+        remaining -= run;
+    }
+    m_ulMicFeedReadCursor += toCopy;
+
+    KeReleaseSpinLock(&m_MicFeedRingLock, oldIrql);
+
+    return toCopy;
 }
 
 //=============================================================================
