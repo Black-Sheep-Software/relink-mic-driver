@@ -468,15 +468,30 @@ DECLARE_INTERFACE_(IAdapterCommon, IUnknown)
         _In_                    ULONG  Bytes
     ) PURE;
 
-    // Drains up to Bytes from that same ring into Data. Returns the number
-    // of bytes actually supplied; the caller is responsible for zero-filling
-    // the remainder (same silence-on-underrun behavior as before this ring
+    // Drains up to Bytes from that same ring into Data, advancing the
+    // caller's own ReadCursor (not a shared one - more than one capture
+    // stream can be open on the mic at once, e.g. Windows' own level-meter
+    // display opens a stream independently of whatever app is actually
+    // recording, so each caller must track its own read position into the
+    // ring rather than compete over one). Returns the number of bytes
+    // actually supplied; the caller is responsible for zero-filling the
+    // remainder (same silence-on-underrun behavior as before this ring
     // existed, for whenever nothing is currently rendering).
     STDMETHOD_(ULONG,           PullMicFeedAudio)
     (
         THIS_
-        _Out_writes_bytes_(Bytes) BYTE* Data,
-        _In_                      ULONG Bytes
+        _Out_writes_bytes_(Bytes) BYTE*  Data,
+        _In_                      ULONG  Bytes,
+        _Inout_                   ULONG* ReadCursor
+    ) PURE;
+
+    // Returns the ring's current write position, for a newly-opened capture
+    // stream to initialize its own ReadCursor against (starting live from
+    // "now" rather than replaying whatever backlog happened to accumulate
+    // before this particular stream existed).
+    STDMETHOD_(ULONG,           GetMicFeedWriteCursor)
+    (
+        THIS
     ) PURE;
 
 };

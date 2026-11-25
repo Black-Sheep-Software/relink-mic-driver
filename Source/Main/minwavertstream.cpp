@@ -227,6 +227,8 @@ Return Value:
     m_SignalProcessingMode = SignalProcessingMode;
     m_bEoSReceived = FALSE;
     m_bLastBufferRendered = FALSE;
+    m_ulMicFeedReadCursor = 0;
+    m_bMicFeedReadCursorInitialized = FALSE;
 
     m_ulHostCaptureToneFrequency = IsEqualGUID(SignalProcessingMode, AUDIO_SIGNALPROCESSINGMODE_RAW) ? 1000 : 2000;
     m_dwHostCaptureToneAmplitude = 50;
@@ -1412,6 +1414,17 @@ ByteDisplacement - # of bytes to process.
 {
     ULONG bufferOffset = m_ullLinearPosition % m_ulDmaBufferSize;
 
+    PADAPTERCOMMON pAdapterCommon = (m_pMiniport != NULL) ? m_pMiniport->GetAdapterCommObj() : NULL;
+
+    // First time this particular stream instance pulls, start it hearing
+    // live audio from "now" rather than replaying whatever backlog
+    // happened to accumulate before it existed - see GetMicFeedWriteCursor.
+    if (pAdapterCommon != NULL && !m_bMicFeedReadCursorInitialized)
+    {
+        m_ulMicFeedReadCursor = pAdapterCommon->GetMicFeedWriteCursor();
+        m_bMicFeedReadCursorInitialized = TRUE;
+    }
+
     // Normally this will loop no more than once for a single wrap, but if
     // many bytes have been displaced then this may loops many times.
     while (ByteDisplacement > 0)
@@ -1419,14 +1432,14 @@ ByteDisplacement - # of bytes to process.
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
 
         // Drain whatever the render ("speaker") stream has handed over via
-        // the shared adapter object's ring (see common.cpp); anything the
-        // ring doesn't have yet falls back to silence, same as before this
-        // existed, so an idle/no-producer mic stays silent rather than
-        // glitching.
+        // the shared adapter object's ring (see common.cpp), from this
+        // stream's own read position - anything the ring doesn't have yet
+        // falls back to silence, same as before this existed, so an idle/
+        // no-producer mic stays silent rather than glitching.
         ULONG filled = 0;
-        if (m_pMiniport != NULL && m_pMiniport->GetAdapterCommObj() != NULL)
+        if (pAdapterCommon != NULL)
         {
-            filled = m_pMiniport->GetAdapterCommObj()->PullMicFeedAudio(m_pDmaBuffer + bufferOffset, runWrite);
+            filled = pAdapterCommon->PullMicFeedAudio(m_pDmaBuffer + bufferOffset, runWrite, &m_ulMicFeedReadCursor);
         }
         if (filled < runWrite)
         {

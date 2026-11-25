@@ -117,6 +117,13 @@ protected:
     BOOLEAN                     m_bEoSReceived;
     BOOLEAN                     m_bLastBufferRendered;
     KSPIN_LOCK                  m_PositionSpinLock;
+    // This capture stream's own position into the shared adapter object's
+    // mic-feed ring (see common.cpp) - each capture stream that opens needs
+    // its own, since more than one can be open on the mic at once (e.g.
+    // Windows' own level-meter display opens one independently of whatever
+    // app is actually recording).
+    ULONG                       m_ulMicFeedReadCursor;
+    BOOLEAN                     m_bMicFeedReadCursorInitialized;
     // Member variable as config params for tone generator
     ULONG                       m_ulHostCaptureToneFrequency;
     // If abs(m_dwHostCaptureToneAmplitude) + abs(m_dwHostCaptureToneDCValue) > 100

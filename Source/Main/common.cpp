@@ -59,9 +59,17 @@ class CAdapterCommon :
         // own timer mechanism, so this only needs to protect the handoff
         // between those two independent call sites, not reentrancy within
         // either one.
+        // No reader-side cursor here: more than one capture stream can be
+        // reading the mic at once (Windows' own level-meter display opens a
+        // stream of its own independent of whatever app is actually
+        // recording), so each CMiniportWaveRTStream tracks its own read
+        // position into this ring (passed into PullMicFeedAudio by the
+        // caller) rather than competing over one shared position. The ring
+        // itself just keeps writing and wrapping regardless of readers;
+        // a reader that falls more than m_ulMicFeedRingSize behind simply
+        // catches up to "now", same as any bounded broadcast ring.
         BYTE*                   m_pMicFeedRing;
         ULONG                   m_ulMicFeedRingSize;
-        ULONG                   m_ulMicFeedReadCursor;
         ULONG                   m_ulMicFeedWriteCursor;
         KSPIN_LOCK              m_MicFeedRingLock;
 
@@ -252,9 +260,12 @@ class CAdapterCommon :
 
         STDMETHODIMP_(ULONG) PullMicFeedAudio
         (
-            _Out_writes_bytes_(Bytes) BYTE* Data,
-            _In_                      ULONG Bytes
+            _Out_writes_bytes_(Bytes) BYTE*  Data,
+            _In_                      ULONG  Bytes,
+            _Inout_                   ULONG* ReadCursor
         );
+
+        STDMETHODIMP_(ULONG) GetMicFeedWriteCursor();
 
         //=====================================================================
         // friends
@@ -609,7 +620,6 @@ Return Value:
 
     m_pMicFeedRing          = NULL;
     m_ulMicFeedRingSize     = 64 * 1024; // ~a few hundred ms at typical rates; revisit once a real format mismatch is observed
-    m_ulMicFeedReadCursor   = 0;
     m_ulMicFeedWriteCursor  = 0;
     KeInitializeSpinLock(&m_MicFeedRingLock);
 
@@ -2162,10 +2172,10 @@ CAdapterCommon::Cleanup()
 
 //=============================================================================
 // Mic-feed ring: see the member declarations above for the lifetime/locking
-// rationale. Both methods run at PASSIVE_LEVEL (called from ReadBytes/
-// WriteBytes, themselves called from UpdatePosition - see minwavertstream.cpp)
-// so a simple KSPIN_LOCK is enough; neither method is ever called at
-// DISPATCH_LEVEL or higher.
+// rationale and why there's no shared read cursor here. All three methods
+// run at PASSIVE_LEVEL (called from ReadBytes/WriteBytes, themselves called
+// from UpdatePosition - see minwavertstream.cpp) so a simple KSPIN_LOCK is
+// enough; none of them is ever called at DISPATCH_LEVEL or higher.
 #pragma code_seg()
 VOID
 CAdapterCommon::PushMicFeedAudio
@@ -2182,25 +2192,15 @@ CAdapterCommon::PushMicFeedAudio
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_MicFeedRingLock, &oldIrql);
 
-    // If the producer is pushing faster than the consumer drains (or nothing
-    // is draining at all), drop the oldest bytes rather than growing without
-    // bound or overflowing the ring's own bookkeeping - advance the read
-    // cursor to make room, same as any bounded SPSC ring under overrun.
-    ULONG used = m_ulMicFeedWriteCursor - m_ulMicFeedReadCursor; // unsigned wraparound-safe
+    // No reader bookkeeping here at all - this just keeps writing and
+    // wrapping. A single push bigger than the whole ring only needs its
+    // tail kept, same idea as any bounded ring; readers that fall more than
+    // m_ulMicFeedRingSize behind catch themselves up independently in
+    // PullMicFeedAudio below.
     if (Bytes > m_ulMicFeedRingSize)
     {
-        // A single push bigger than the whole ring: nothing previously
-        // buffered survives regardless, and the whole ring will be
-        // overwritten by the tail of this push - just catch the read
-        // cursor up to the write cursor as it stands right now, before
-        // either is advanced below.
         Data += (Bytes - m_ulMicFeedRingSize);
         Bytes = m_ulMicFeedRingSize;
-        m_ulMicFeedReadCursor = m_ulMicFeedWriteCursor;
-    }
-    else if (used + Bytes > m_ulMicFeedRingSize)
-    {
-        m_ulMicFeedReadCursor = m_ulMicFeedWriteCursor + Bytes - m_ulMicFeedRingSize;
     }
 
     ULONG writeOffset = m_ulMicFeedWriteCursor % m_ulMicFeedRingSize;
@@ -2223,8 +2223,9 @@ CAdapterCommon::PushMicFeedAudio
 ULONG
 CAdapterCommon::PullMicFeedAudio
 (
-    _Out_writes_bytes_(Bytes) BYTE* Data,
-    _In_                      ULONG Bytes
+    _Out_writes_bytes_(Bytes) BYTE*  Data,
+    _In_                      ULONG  Bytes,
+    _Inout_                   ULONG* ReadCursor
 )
 {
     if (m_pMicFeedRing == NULL || m_ulMicFeedRingSize == 0 || Bytes == 0)
@@ -2235,10 +2236,18 @@ CAdapterCommon::PullMicFeedAudio
     KIRQL oldIrql;
     KeAcquireSpinLock(&m_MicFeedRingLock, &oldIrql);
 
-    ULONG available = m_ulMicFeedWriteCursor - m_ulMicFeedReadCursor; // unsigned wraparound-safe
+    // unsigned wraparound-safe; if this caller fell behind by more than the
+    // ring holds (slow/stalled consumer), catch it up to "now minus a full
+    // ring" rather than handing back a bogus huge "available" count.
+    ULONG available = m_ulMicFeedWriteCursor - *ReadCursor;
+    if (available > m_ulMicFeedRingSize)
+    {
+        *ReadCursor = m_ulMicFeedWriteCursor - m_ulMicFeedRingSize;
+        available = m_ulMicFeedRingSize;
+    }
     ULONG toCopy = min(available, Bytes);
 
-    ULONG readOffset = m_ulMicFeedReadCursor % m_ulMicFeedRingSize;
+    ULONG readOffset = *ReadCursor % m_ulMicFeedRingSize;
     ULONG remaining = toCopy;
     BYTE* dst = Data;
     while (remaining > 0)
@@ -2249,11 +2258,28 @@ CAdapterCommon::PullMicFeedAudio
         dst += run;
         remaining -= run;
     }
-    m_ulMicFeedReadCursor += toCopy;
+    *ReadCursor += toCopy;
 
     KeReleaseSpinLock(&m_MicFeedRingLock, oldIrql);
 
     return toCopy;
+}
+
+#pragma code_seg()
+ULONG
+CAdapterCommon::GetMicFeedWriteCursor()
+{
+    // A newly-opened capture stream calls this once to initialize its own
+    // read cursor to "now", so it starts hearing live audio from the moment
+    // it opens rather than replaying whatever backlog happened to
+    // accumulate before it existed. A plain volatile read under the same
+    // lock as the writer is enough here - this is a one-shot snapshot, not
+    // part of the hot per-packet path.
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&m_MicFeedRingLock, &oldIrql);
+    ULONG cursor = m_ulMicFeedWriteCursor;
+    KeReleaseSpinLock(&m_MicFeedRingLock, oldIrql);
+    return cursor;
 }
 
 //=============================================================================
