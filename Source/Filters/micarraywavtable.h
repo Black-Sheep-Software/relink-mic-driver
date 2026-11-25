@@ -20,7 +20,13 @@ Abstract:-
 //
 #define MICARRAY_RAW_CHANNELS                   2       // Channels for raw mode
 #define MICARRAY_DEVICE_MAX_CHANNELS            2       // Max channels overall
-#define MICARRAY_32_BITS_PER_SAMPLE_PCM         32      // 32 Bits Per Sample
+// 16, not 32: must match this fork's speaker endpoint's own bit depth
+// exactly (see the matching comment on MicArrayPinSupportedDeviceFormats[0]
+// below) since the mic-feed ring between them does a raw byte copy with no
+// format conversion. This is also the actual negotiation gate (the data
+// range below), not just a display label, so it has to change here too -
+// the format-list entry alone isn't enough.
+#define MICARRAY_BITS_PER_SAMPLE_PCM            16
 #define MICARRAY_RAW_SAMPLE_RATE                48000   // Raw sample rate
 
 //
@@ -35,7 +41,13 @@ static
 KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
 {
     //------------------------------------------------------------------------
-    // 48 KHz, 32-bit, 2 channels (Stereo)
+    // 48 KHz, 16-bit, 2 channels (Stereo) - deliberately matches this fork's
+    // speaker endpoint's own default entry exactly (SpeakerHostPinSupported
+    // DeviceFormats[0] in speakerwavtable.h: 16-bit/stereo/48kHz/PCM). The
+    // mic-feed ring (common.cpp) copies raw bytes between the two endpoints
+    // with no format conversion, so their default formats must be identical
+    // or the audio comes out scrambled - this was 32-bit here before, which
+    // is exactly what caused that.
     //------------------------------------------------------------------------
     {
         {
@@ -52,12 +64,12 @@ KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
                 WAVE_FORMAT_EXTENSIBLE,       // wFormatTag
                 2,                           // nChannels
                 48000,                       // nSamplesPerSec
-                48000 * 2 * 4,               // nAvgBytesPerSec = 48000 * channels * bytes_per_sample
-                2 * 4,                       // nBlockAlign = channels * bytes_per_sample
-                32,                          // wBitsPerSample
+                48000 * 2 * 2,               // nAvgBytesPerSec = 48000 * channels * bytes_per_sample
+                2 * 2,                       // nBlockAlign = channels * bytes_per_sample
+                16,                          // wBitsPerSample
                 sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)
             },
-            32,                              // Samples (wValidBitsPerSample)
+            16,                              // Samples (wValidBitsPerSample)
             KSAUDIO_SPEAKER_STEREO,          // dwChannelMask
             STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM)
         }
@@ -311,8 +323,8 @@ KSDATARANGE_AUDIO MicArrayPinDataRangesRawStream[] =
             STATICGUIDOF(KSDATAFORMAT_SPECIFIER_WAVEFORMATEX)
         },
         MICARRAY_RAW_CHANNELS,
-        MICARRAY_32_BITS_PER_SAMPLE_PCM,
-        MICARRAY_32_BITS_PER_SAMPLE_PCM,
+        MICARRAY_BITS_PER_SAMPLE_PCM,
+        MICARRAY_BITS_PER_SAMPLE_PCM,
         MICARRAY_RAW_SAMPLE_RATE,
         MICARRAY_RAW_SAMPLE_RATE
     },
